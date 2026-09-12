@@ -495,6 +495,19 @@ function ReaderHighlight:addToMainMenu(menu_items)
         end,
     })
     table.insert(hl_sub_item_table, {
+        text = _("Invert highlight color in night mode"),
+        enabled_func = function()
+            return self.view.highlight.saved_drawer ~= "invert"
+        end,
+        checked_func = function()
+            return self.view.highlight.saved_drawer ~= "invert" and G_reader_settings:isTrue("highlight_selection_invert_highlight_color")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrFalse("highlight_selection_invert_highlight_color")
+            UIManager:setDirty(self.dialog, "ui")
+        end,
+    })
+    table.insert(hl_sub_item_table, {
         text = _("Use highlight color for selection"),
         enabled_func = function()
             return self.view.highlight.saved_drawer ~= "invert"
@@ -1290,6 +1303,15 @@ function ReaderHighlight:showChooseHighlightDialog(highlights)
                 end,
             }}
         end
+        if self.ui.rolling then
+            table.insert(buttons, {{
+                text = _("Merge highlights"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:mergeHighlights(highlights)
+                end,
+            }})
+        end
         dialog = ButtonDialog:new{
             buttons = buttons,
         }
@@ -1387,6 +1409,8 @@ function ReaderHighlight:showHighlightDialog(index)
     end
     local move_by_char = false
     local edit_highlight_dialog
+    local can_have_bindings = Device:hasScreenKB() or Device:hasKeyboard() -- stricter version of Device:hasKeys()
+    local modifier = can_have_bindings and ( Device:hasScreenKB() and "ScreenKB" or "Shift" ) or nil
     local buttons = {
         {
             {
@@ -1427,6 +1451,7 @@ function ReaderHighlight:showHighlightDialog(index)
             },
             {
                 text = "…",
+                key_bindings = can_have_bindings and { { "ScreenKBPress", "AA" } } or nil,
                 callback = function()
                     self.selected_text = util.tableDeepCopy(item)
                     self:onShowHighlightMenu(index)
@@ -1438,9 +1463,11 @@ function ReaderHighlight:showHighlightDialog(index)
             {
                 text = start_prev,
                 enabled = change_boundaries_enabled,
+                key_bindings = can_have_bindings and "LPgFwd" or nil,
                 callback = function()
                     self:updateHighlight(index, 0, -1, move_by_char)
                 end,
+                hold_key_bindings = can_have_bindings and { modifier, "LPgFwd" } or nil,
                 hold_callback = function()
                     move_by_char = not move_by_char
                     self:updateHighlight(index, 0, -1, true)
@@ -1449,9 +1476,11 @@ function ReaderHighlight:showHighlightDialog(index)
             {
                 text = start_next,
                 enabled = change_boundaries_enabled,
+                key_bindings = can_have_bindings and "LPgBack" or nil,
                 callback = function()
                     self:updateHighlight(index, 0, 1, move_by_char)
                 end,
+                hold_key_bindings = can_have_bindings and { modifier, "LPgBack" } or nil,
                 hold_callback = function()
                     move_by_char = not move_by_char
                     self:updateHighlight(index, 0, 1, true)
@@ -1460,9 +1489,11 @@ function ReaderHighlight:showHighlightDialog(index)
             {
                 text = end_prev,
                 enabled = change_boundaries_enabled,
+                key_bindings = can_have_bindings and "RPgBack" or nil,
                 callback = function()
                     self:updateHighlight(index, 1, -1, move_by_char)
                 end,
+                hold_key_bindings = can_have_bindings and { modifier, "RPgBack" } or nil,
                 hold_callback = function()
                     move_by_char = not move_by_char
                     self:updateHighlight(index, 1, -1, true)
@@ -1471,9 +1502,11 @@ function ReaderHighlight:showHighlightDialog(index)
             {
                 text = end_next,
                 enabled = change_boundaries_enabled,
+                key_bindings = can_have_bindings and "RPgFwd" or nil,
                 callback = function()
                     self:updateHighlight(index, 1, 1, move_by_char)
                 end,
+                hold_key_bindings = can_have_bindings and { modifier, "RPgFwd" } or nil,
                 hold_callback = function()
                     move_by_char = not move_by_char
                     self:updateHighlight(index, 1, 1, true)
@@ -2149,7 +2182,15 @@ function ReaderHighlight:translate(index)
 end
 
 function ReaderHighlight:onTranslateText(text, index)
-    Translator:showTranslation(text, true, nil, nil, true, index)
+    if not (self.highlight_dialog or index) then
+        -- 'Translate' is called as default action for new highlight.
+        -- The highlight must be cleared, otherwise it remains on screen
+        -- after "Cancel" is chosen in the "Turn on Wi-Fi" dialog.
+        -- But Translator needs selected_text to add translation to the note.
+        self.selected_text_backup = self.selected_text
+        self:clear()
+    end
+    Translator:showTranslation(text, true, nil, nil, self, index)
 end
 
 function ReaderHighlight:onTranslateCurrentPage()
@@ -2217,6 +2258,7 @@ function ReaderHighlight:onHoldRelease()
     end
 
     if self.selected_text then
+        self.highlight_dialog = nil
         if self.is_word_selection then
             self:lookupDictWord()
         else
@@ -2238,7 +2280,6 @@ function ReaderHighlight:onHoldRelease()
                 self:onClose()
             elseif default_highlight_action == "dictionary" then
                 self:lookupDict()
-                self:onClose(true) -- keep selected text
             elseif default_highlight_action == "search" then
                 self:onHighlightSearch()
                 -- No self:onClose() to not remove the selected text
@@ -2775,6 +2816,47 @@ function ReaderHighlight:extendSelection()
         pboxes = new_pboxes,
         ext = ext,
     }
+    UIManager:setDirty(self.dialog, "ui")
+end
+
+function ReaderHighlight:mergeHighlights(highlights)
+    local annotations = self.ui.annotation.annotations
+    local hl_pos0 = {} -- annotation indexes ordered by pos0
+    local hl_pos1 = {} -- annotation indexes ordered by pos1
+    for i, idx in ipairs(highlights) do
+        hl_pos0[i] = idx
+        hl_pos1[i] = idx
+    end
+    local compare = self.ui.rolling and self.ui.document.compareXPointers or self.ui.document.comparePositions
+    table.sort(hl_pos0, function(a, b)
+        return compare(self.ui.document, annotations[a].pos0, annotations[b].pos0) == 1
+    end)
+    table.sort(hl_pos1, function(a, b)
+        return compare(self.ui.document, annotations[a].pos1, annotations[b].pos1) == 1
+    end)
+
+    local notes = {} -- combine notes ordered by pos0
+    for _, idx in ipairs(hl_pos0) do
+        if annotations[idx].note then
+            table.insert(notes, annotations[idx].note)
+        end
+    end
+    local item1 = annotations[hl_pos0[1]] -- all properties from the first (by pos0) highlight
+    local pos1 = annotations[hl_pos1[#hl_pos1]].pos1 -- from the last (by pos1) highlight
+    self.selected_text = {
+        datetime = item1.datetime,
+        drawer = item1.drawer,
+        color = item1.color,
+        note = next(notes) and table.concat(notes, "\n"),
+        text = self.ui.document:getTextFromXPointers(item1.pos0, pos1, false),
+        pos0 = item1.pos0,
+        pos1 = pos1,
+    }
+    table.sort(highlights)
+    for i = #highlights, 1, -1 do
+        self:deleteHighlight(highlights[i])
+    end
+    self:saveHighlight()
     UIManager:setDirty(self.dialog, "ui")
 end
 
