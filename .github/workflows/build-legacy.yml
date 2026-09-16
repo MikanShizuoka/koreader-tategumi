@@ -15,6 +15,7 @@ jobs:
       image: koreader/kokindle:latest
     env:
       BASH_ENV: /home/ko/.bashrc
+      RELEASE_TAG: v2026.08
     steps:
       - uses: actions/checkout@v4
         with:
