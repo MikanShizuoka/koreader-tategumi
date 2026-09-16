@@ -1,0 +1,34 @@
+name: Build kindle-legacy
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  kindle-legacy:
+    name: Kindle (legacy, ARMv6)
+    runs-on: ubuntu-latest
+    container:
+      image: koreader/kokindle:latest
+    env:
+      BASH_ENV: /home/ko/.bashrc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch submodules
+        run: make fetchthirdparty
+      - name: Build
+        run: make TARGET=kindle-legacy
+      - name: Package
+        run: make TARGET=kindle-legacy update
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koreader-kindle-legacy
+          path: |
+            koreader-*.zip
+            koreader-*.targz
+            koreader-*.tar.xz
